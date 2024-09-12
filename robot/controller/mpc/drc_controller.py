@@ -13,7 +13,7 @@ class DRCController:
         self.angle_min = angle_min
         self.angle_max = angle_max
         self.angle_inc = angle_inc
-        self.robot_radius = 0.35
+        self.robot_radius = 0.5
         self.wasserstein_r = 0.004
         self.epsilon = 0.1
         self.alpha = 0.1  # CBF hyperparameter
@@ -159,7 +159,7 @@ class DRCController:
     def sdf_rt(self, rbt, tgt, map_info):
         rbt_d = self.w2m(map_info, rbt.reshape((3, 1))).squeeze()
         # minimum vertex polygon function is called inside SDF_RT (raytracing)
-        rt_visible = SDF_RT(rbt_d, np.pi/3, 10, 50, map_info['map'])
+        rt_visible = SDF_RT(rbt_d, np.pi/3, 60, 50, map_info['map'])
         visible_region = (self.m2w(map_info, rt_visible.T)[0:2, :]).T
         return self.sdf(visible_region, tgt[0:2])
 
@@ -195,14 +195,14 @@ class DRCController:
 
     def g_fov(self, rbt_state, tgt_state, tgt_vel, u, fov, map_info):
         val1 = self.new_fd_grad(rbt_state, tgt_state, "rbt", fov, map_info)
-        val2 = alpha_fov * -self.sdf(fov, tgt_state[0:2])
+        # val2 = alpha_fov * -self.sdf(fov, tgt_state[0:2])
         # val3 = new_fd_grad(rbt_state, tgt_state, "tgt") @ tgt_vel
         # note: use @ G @ u instead of @f since f uses x+G(x)u
-        print("FoV components: ", "Gradient term: ", val1, "Target SDF to agent FoV (RHS): ", -self.sdf(fov, tgt_state[0:2]))
-        # print("FoV polygon: ", fov)
+        print("FoV components: ", "Gradient term: ", val1, "Target SDF to agent FoV (RHS): ", -self.sdf_rt(rbt_state, tgt_state[0:2], map_info))
+#        print("FoV polygon: ", fov)
         # polygon_sdf has a -ve sign for visibility CBF since safe set definition is flipped
         # i.e. inside agent FoV, SDF should be >=0; flip sign on target SDF so this is achieved
-        return (self.new_fd_grad(rbt_state, tgt_state, "rbt", fov, map_info) @ self.G(rbt_state) @ u) + (alpha_fov * -self.sdf(fov, tgt_state[0:2])) \
+        return (self.new_fd_grad(rbt_state, tgt_state, "rbt", fov, map_info) @ self.G(rbt_state) @ u) + (alpha_fov * -self.sdf_rt(rbt_state, tgt_state[0:2], map_info)) \
              + self.new_fd_grad(rbt_state, tgt_state, "tgt", fov, map_info)[:2] @ tgt_vel  # dh/dt, tgt assumed constant velocity model so no w term in velocity
 
 
@@ -220,7 +220,7 @@ class DRCController:
         Use header info from robot lidar from /scan to map angle increments in each scan"""
 
         # get n closest points from lidar scan
-        scan_filt = np.where(scan < self.robot_radius + 0.03, np.inf, scan)
+        scan_filt = scan #np.where(scan < self.robot_radius + 0.03, np.inf, scan)
         min_ix = np.argsort(scan_filt)[:n_samples]
         h_samples = scan_filt[min_ix]
         print("Min lidar range: ", h_samples)
@@ -246,15 +246,14 @@ class DRCController:
         beta = cp.Variable(N)
         s = cp.Variable(1)
         d = cp.Variable() # Visibility CBF slack
-        M = 1
+        M = 0
 
-        robot_radius = 0.31
         wasserstein_r = 0.004
         epsilon = 0.1
         alpha = 0.1  # CBF hyperparameter
 
         # Compute q samples, a vector of dimension 5; last 0 is theta component of gradient
-        q_samples = [np.hstack([dh_dt_samples[i], h_samples[i] - robot_radius, h_grad_samples[i], 0]) for i in
+        q_samples = [np.hstack([dh_dt_samples[i], h_samples[i] - self.robot_radius, h_grad_samples[i], 0]) for i in
                      range(N)]
 
         visibility_cbf_constraint = []
@@ -264,8 +263,7 @@ class DRCController:
             visibility_samples = np.hstack([dh_dt_samples_vis, h_samples_vis, h_grad_samples_vis])
             q_samples.append(visibility_samples)
         else:
-            visibility_cbf_constraint.append(self.g_fov(rbt, tgt, tgt_vel, uu, fov, map_info) >= -d)
-            visibility_cbf_constraint.append(d >= 0)
+            visibility_cbf_constraint.append(self.g_fov(rbt, tgt, tgt_vel, uu, fov, map_info) >= 0)
 
 
         Fu = self.f(rbt, uu)
@@ -295,9 +293,9 @@ class DRCController:
         ]
 
         # 1st term is minimizing deviation from reference; 2nd is for visibility CBF slack
-        obj = cp.Minimize(cp.norm(uu - ref) + M * d ** 2)
+        obj = cp.Minimize(cp.norm(uu - ref))
         print("Warning: Obstacle CBF deactivated")
-        constraints = bound_constraints + visibility_cbf_constraint
+        constraints = bound_constraints + dro_cbf_constraints #+  visibility_cbf_constraint
 
         prob = cp.Problem(obj, constraints)
 
@@ -321,8 +319,8 @@ class DRCController:
         # apply bound constraint on optimal control as a post-processing step
         u_clipped = self.clip_opt_u(copy(uu.value[0:2]))
         print("Final original control: ", uu.value[0:2], "Clipped control: ", u_clipped, "Visibility slack: ", d.value)
-        print("Distance to nearest obstacle: ", h_samples - robot_radius)
-        if h_samples - robot_radius < 0: print("################ OBSTACLE COLLISION #############", "\n")
+        print("Distance to nearest obstacle: ", h_samples - self.robot_radius)
+        if h_samples - self.robot_radius < 0: print("################ OBSTACLE COLLISION #############", "\n")
         for constraint in constraints:
             print("Constraint satisfied: ", constraint.value(), ", ", "Constraint dual value: ", constraint.dual_value)
 

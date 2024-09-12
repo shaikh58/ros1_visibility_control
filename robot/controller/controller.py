@@ -94,19 +94,19 @@ class MyControllerNode:
                 return
 
             # for debugging: check messages to see if any are None
-            rospy.loginfo("scan" + str(type(scan)))
-            rospy.loginfo("Target pose: " + str(type(target_pose)))
-            rospy.loginfo(str(type(target_velocity)))
-            rospy.loginfo("Agent pose: " + str(type(pose)))
-            rospy.loginfo("Reference input: " + str(type(ref_vel)))
-            rospy.loginfo("Map: " + str(type(map_info["map"])))
+#            rospy.loginfo("scan" + str(type(scan)))
+#            rospy.loginfo("Target pose: " + str(type(target_pose)))
+#            rospy.loginfo(str(type(target_velocity)))
+#            rospy.loginfo("Agent pose: " + str(type(pose)))
+#            rospy.loginfo("Reference input: " + str(type(ref_vel)))
+#            rospy.loginfo("Map: " + str(type(map_info["map"])))
             self.control_loop(pose, target_pose, target_velocity, ref_vel, scan, map_info)
             end = rospy.get_rostime()
             rospy.loginfo(f'Controller processing time: {(end - start).to_sec() * 1000} ms')
 
     def target_pose_callback(self, event):
         try:
-            trans = self.tf_listener.lookupTransform('map', 'base_link', rospy.Time(0))
+            trans = self.tf_listener.lookupTransform('map', 'tag_frame', rospy.Time(0))
         except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
             rospy.logerr(e)
             return
@@ -133,7 +133,7 @@ class MyControllerNode:
 
     def pose_callback(self, event):
         try:
-            trans = self.tf_listener.lookupTransform('map', 'map', rospy.Time(0))
+            trans = self.tf_listener.lookupTransform('map', 'base_link', rospy.Time(0))
         except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
             rospy.logerr(e)
             return
@@ -180,6 +180,7 @@ class MyControllerNode:
 
     def control_loop(self, pose, target_pose, target_velocity, ref_vel, scan, map_info=None):
         if scan is not None and target_pose is not None and target_velocity is not None and pose is not None and ref_vel is not None:
+            print("Target pose: ", target_pose, "Target velocity: ", target_velocity, "Agent pose: ", pose, "Planner reference control: ", ref_vel)
             scan[scan == np.inf] = radius
             fov = self.get_fov_from_lidar(scan, pose, stride=2)
             samples = self.solver.get_drc_samples(self.scan, n_samples=1)

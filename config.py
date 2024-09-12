@@ -3,7 +3,7 @@ import os
 
 params_filename = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "params/params_compare.yaml"))
 params_filename = '/home/joe/Documents/Bringups/carla-ros-cbf/carla_ros_cbf/params/params_compare.yaml'
-params_filename = '/home/administrator/visibility_control/params/params_compare.yaml'
+params_filename = '/home/administrator/visibility_control/ros1_visibility_control/params/params_compare.yaml'
 # assert os.path.exists(params_filename)
 with open(params_filename) as f:
     params = yaml.load(f, Loader=yaml.FullLoader)
