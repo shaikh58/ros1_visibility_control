@@ -1,4 +1,6 @@
 import numpy as np
+import time
+from datetime import datetime
 import rospy
 import array
 import tf
@@ -49,11 +51,15 @@ class MyControllerNode:
         self.use_raytracing = True
         self.fov_calc_ongoing = False
         self.fov_record = []
+        self.raytraced_fov_record = []
         self.sdf_record = []
         self.pose_record = []
         self.ref_control_record = []
+        self.target_velocity_record = []
         self.target_pose_record = []
         self.lidar_min_dist_record = []
+        self.data_output_time_str = None
+        self.data_pkl = None
         self.data_record_ts = None
         self.solver = DRCController()
         self.initial_target_cov = np.diag([0, 0, 0, 0, 0])
@@ -211,7 +217,7 @@ class MyControllerNode:
 
             ################################## save data to calculate metrics ##################################
             self.sdf_record.append(self.solver.h)
-            self.raytraced_fov_record.append(self.solver.`raytraced_fov)
+            self.raytraced_fov_record.append(self.solver.raytraced_fov)
             self.pose_record.append(pose)
             self.target_pose_record.append(target_pose)
             self.target_velocity_record.append(target_velocity)
@@ -222,7 +228,7 @@ class MyControllerNode:
             data_pkl = {
                 "timestamp": self.data_record_ts,
                 "sdf_record": self.sdf_record,
-                "fov_record": self.fov_record,
+                "raytraced_fov_record": self.raytraced_fov_record,
                 "robot_pose_record": self.pose_record,
                 "target_pose_record": self.target_pose_record, 
                 "target_velocity_record": self.target_velocity_record,
@@ -233,30 +239,29 @@ class MyControllerNode:
                 "rt_fov_range_angle": self.solver.raytracing_fov_range_angle
             }
             dt_object = datetime.fromtimestamp(self.data_record_ts)
-            readable_time = dt_object.strftime('%Y-%m-%d %H:%M:%S')
-
-            with open(f"~/visibility_control/experiments/data/output_data_{readable_time}.pkl", 'wb') as file:
-                pickle.dump(data_pkl, file)
+            readable_time = dt_object.strftime('%Y-%m-%d_%H:%M:%S')
+            self.data_pkl = data_pkl
+            self.data_output_time_str = readable_time
 
             # true fov from lidar to visualize in rviz
-            self.fov_record.append(fov)
-            if len(self.fov_record) == 5:
-               print(self.scan_header)
-               fov_msg = LaserScan()
-               fov_msg.header.seq = len(self.fov_record)
-               fov_msg.header.frame_id = 'map'
-               fov_msg.header.stamp = rospy.get_rostime()
-               fov_msg.angle_min = self.scan_header.angle_min
-               fov_msg.angle_max = self.scan_header.angle_max
-               fov_msg.angle_increment = self.scan_header.angle_increment
-               fov_msg.time_increment = self.scan_header.time_increment
-               fov_msg.scan_time = self.scan_header.scan_time
-               fov_msg.range_min = self.scan_header.range_min
-               fov_msg.range_max = self.scan_header.range_max
-               ranges = np.array(self.fov_record).reshape(-1)
-               fov_msg.ranges = array.array('f', ranges)
-               self.fov_pub.publish(fov_msg)
-               self.fov_record = []
+#            self.fov_record.append(fov)
+#            if len(self.fov_record) == 5:
+#               print(self.scan_header)
+#               fov_msg = LaserScan()
+#               fov_msg.header.seq = len(self.fov_record)
+#               fov_msg.header.frame_id = 'map'
+#               fov_msg.header.stamp = rospy.get_rostime()
+#               fov_msg.angle_min = self.scan_header.angle_min
+#               fov_msg.angle_max = self.scan_header.angle_max
+#               fov_msg.angle_increment = self.scan_header.angle_increment
+#               fov_msg.time_increment = self.scan_header.time_increment
+#               fov_msg.scan_time = self.scan_header.scan_time
+#               fov_msg.range_min = self.scan_header.range_min
+#               fov_msg.range_max = self.scan_header.range_max
+#               ranges = np.array(self.fov_record).reshape(-1)
+#               fov_msg.ranges = array.array('f', ranges)
+#               self.fov_pub.publish(fov_msg)
+#               self.fov_record = []
 
             # publish the control
             if u is not None:
@@ -270,6 +275,7 @@ if __name__ == '__main__':
     try:
         node = MyControllerNode()
         rospy.spin()
+        with open(f"/home/administrator/visibility_control/experiments/data/output_data_{node.data_output_time_str}.pkl", 'wb') as file:
+            pickle.dump(node.data_pkl, file)
     except rospy.ROSInterruptException:
         pass
-

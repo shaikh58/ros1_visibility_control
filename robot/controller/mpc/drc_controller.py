@@ -171,7 +171,7 @@ class DRCController:
         rt_visible = SDF_RT(rbt_d, self.raytracing_fov_range_angle, self.raytracing_radius, self.raytracing_res, map_info['map'])
         visible_region = (self.m2w(map_info, rt_visible.T)[0:2, :]).T
         if return_fov:
-        	return self.sdf(visible_region, tgt[0:2]), visible_region
+            return self.sdf(visible_region, tgt[0:2]), visible_region
         return self.sdf(visible_region, tgt[0:2])
 
 
@@ -206,18 +206,18 @@ class DRCController:
 
     def g_fov(self, rbt_state, tgt_state, tgt_vel, u, fov, map_info):
         dh_dx = self.new_fd_grad(rbt_state, tgt_state, "rbt", fov, map_info)
-        h, raytraced_fov = -self.sdf_rt(rbt_state, tgt_state[0:2], map_info, return_fov=True)
+        h, raytraced_fov = self.sdf_rt(rbt_state, tgt_state[0:2], map_info, return_fov=True)
         # pass to class variable to allow access to control loop to record sdf
         self.h = h
         self.h_ts = time.time()
         self.raytraced_fov = raytraced_fov
         self.raytraced_fov_ts = self.h_ts
         # note: use @ G @ u instead of @f since f uses x+G(x)u
-        print("FoV components: ", "Gradient term: ", dh_dx, "Target SDF to agent FoV (RHS): ", h)
+        print("FoV components: ", "Gradient term: ", dh_dx, "Target SDF to agent FoV (RHS): ", -h)
 #        print("FoV polygon: ", fov)
         # polygon_sdf has a -ve sign for visibility CBF since safe set definition is flipped
         # i.e. inside agent FoV, SDF should be >=0; flip sign on target SDF so this is achieved
-        return (dh_dx @ self.G(rbt_state) @ u) + (alpha_fov * h) \
+        return (dh_dx @ self.G(rbt_state) @ u) + (alpha_fov * -h) \
              + self.new_fd_grad(rbt_state, tgt_state, "tgt", fov, map_info)[:2] @ tgt_vel  # dh/dt, tgt assumed constant velocity model so no w term in velocity
 
 
