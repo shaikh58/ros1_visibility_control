@@ -13,11 +13,20 @@ class DRCController:
         self.angle_min = angle_min
         self.angle_max = angle_max
         self.angle_inc = angle_inc
-        self.robot_radius = 0.5
+        self.robot_radius = 0.3
         self.wasserstein_r = 0.004
         self.epsilon = 0.1
         self.alpha = 0.1  # CBF hyperparameter
         self.use_qp_bound_constraints = False
+        self.R = np.diag([ctrl_penalty_scale_v, ctrl_penalty_scale_w])
+        self.h = None
+        self.h_ts = None
+        self.lidar_min_dist = None
+        self.raytraced_fov = None
+        self.raytraced_fov_ts = None
+        self.raytracing_radius = 60
+        self.raytracing_res = 50
+        self.raytracing_fov_range_angle = np.pi/3 # angle to sweep through for fov
 
 
     def G(self, state):
@@ -156,11 +165,13 @@ class DRCController:
 
 
 
-    def sdf_rt(self, rbt, tgt, map_info):
+    def sdf_rt(self, rbt, tgt, map_info, return_fov=False):
         rbt_d = self.w2m(map_info, rbt.reshape((3, 1))).squeeze()
         # minimum vertex polygon function is called inside SDF_RT (raytracing)
-        rt_visible = SDF_RT(rbt_d, np.pi/3, 60, 50, map_info['map'])
+        rt_visible = SDF_RT(rbt_d, self.raytracing_fov_range_angle, self.raytracing_radius, self.raytracing_res, map_info['map'])
         visible_region = (self.m2w(map_info, rt_visible.T)[0:2, :]).T
+        if return_fov:
+        	return self.sdf(visible_region, tgt[0:2]), visible_region
         return self.sdf(visible_region, tgt[0:2])
 
 
@@ -194,15 +205,19 @@ class DRCController:
 
 
     def g_fov(self, rbt_state, tgt_state, tgt_vel, u, fov, map_info):
-        val1 = self.new_fd_grad(rbt_state, tgt_state, "rbt", fov, map_info)
-        # val2 = alpha_fov * -self.sdf(fov, tgt_state[0:2])
-        # val3 = new_fd_grad(rbt_state, tgt_state, "tgt") @ tgt_vel
+        dh_dx = self.new_fd_grad(rbt_state, tgt_state, "rbt", fov, map_info)
+        h, raytraced_fov = -self.sdf_rt(rbt_state, tgt_state[0:2], map_info, return_fov=True)
+        # pass to class variable to allow access to control loop to record sdf
+        self.h = h
+        self.h_ts = time.time()
+        self.raytraced_fov = raytraced_fov
+        self.raytraced_fov_ts = self.h_ts
         # note: use @ G @ u instead of @f since f uses x+G(x)u
-        print("FoV components: ", "Gradient term: ", val1, "Target SDF to agent FoV (RHS): ", -self.sdf_rt(rbt_state, tgt_state[0:2], map_info))
+        print("FoV components: ", "Gradient term: ", dh_dx, "Target SDF to agent FoV (RHS): ", h)
 #        print("FoV polygon: ", fov)
         # polygon_sdf has a -ve sign for visibility CBF since safe set definition is flipped
         # i.e. inside agent FoV, SDF should be >=0; flip sign on target SDF so this is achieved
-        return (self.new_fd_grad(rbt_state, tgt_state, "rbt", fov, map_info) @ self.G(rbt_state) @ u) + (alpha_fov * -self.sdf_rt(rbt_state, tgt_state[0:2], map_info)) \
+        return (dh_dx @ self.G(rbt_state) @ u) + (alpha_fov * h) \
              + self.new_fd_grad(rbt_state, tgt_state, "tgt", fov, map_info)[:2] @ tgt_vel  # dh/dt, tgt assumed constant velocity model so no w term in velocity
 
 
@@ -223,7 +238,7 @@ class DRCController:
         scan_filt = scan #np.where(scan < self.robot_radius + 0.03, np.inf, scan)
         min_ix = np.argsort(scan_filt)[:n_samples]
         h_samples = scan_filt[min_ix]
-        print("Min lidar range: ", h_samples)
+        self.lidar_min_dist = h_samples
         obs_angles = angle_min + angle_inc * min_ix
         # compute direction vectors
         directions = np.stack([h_samples * np.cos(obs_angles), h_samples * np.sin(obs_angles)])
@@ -293,9 +308,10 @@ class DRCController:
         ]
 
         # 1st term is minimizing deviation from reference; 2nd is for visibility CBF slack
-        obj = cp.Minimize(cp.norm(uu - ref))
+        obj = cp.Minimize(cp.quad_form((uu - ref), self.R) + M*d**2)
+
         print("Warning: Obstacle CBF deactivated")
-        constraints = bound_constraints + dro_cbf_constraints #+  visibility_cbf_constraint
+        constraints = bound_constraints +  visibility_cbf_constraint
 
         prob = cp.Problem(obj, constraints)
 

@@ -12,6 +12,7 @@ from robot.controller.mpc.drc_controller import DRCController
 from robot.estimator.observer import AugmentedEKF
 from env.config import *
 
+
 class MyControllerNode:
     def __init__(self):
         rospy.init_node('my_controller_node', anonymous=True)
@@ -48,6 +49,12 @@ class MyControllerNode:
         self.use_raytracing = True
         self.fov_calc_ongoing = False
         self.fov_record = []
+        self.sdf_record = []
+        self.pose_record = []
+        self.ref_control_record = []
+        self.target_pose_record = []
+        self.lidar_min_dist_record = []
+        self.data_record_ts = None
         self.solver = DRCController()
         self.initial_target_cov = np.diag([0, 0, 0, 0, 0])
         self.process_noise = np.diag([0, 0, 0, 1, 1])
@@ -179,35 +186,79 @@ class MyControllerNode:
         return fov
 
     def control_loop(self, pose, target_pose, target_velocity, ref_vel, scan, map_info=None):
-        if scan is not None and target_pose is not None and target_velocity is not None and pose is not None and ref_vel is not None:
-            print("Target pose: ", target_pose, "Target velocity: ", target_velocity, "Agent pose: ", pose, "Planner reference control: ", ref_vel)
+        """Main control loop that solves the CBF controller"""
+
+        if scan is not None and target_pose is not None and target_velocity is not None \
+        and pose is not None and ref_vel is not None:
+
+            self.data_record_ts = time.time()
+
+            print("Target pose: ", target_pose, "Target velocity: ", target_velocity, "Agent pose: ", pose, 
+                "Planner reference control: ",ref_vel)
+
             scan[scan == np.inf] = radius
             fov = self.get_fov_from_lidar(scan, pose, stride=2)
+
             samples = self.solver.get_drc_samples(self.scan, n_samples=1)
+
             if self.use_sampled_cbf_visibility:
                 visibility_samples = self.solver.get_visibility_cbf_samples(fov, pose, target_pose, target_velocity, map_info)
             else:
                 visibility_samples = (None, None, None)
 
-            u = self.solver.solve_drc(self.pose, self.target_pose, self.target_velocity,self.ref_vel, *samples, fov, map_info, self.use_sampled_cbf_visibility, *visibility_samples)
-            self.fov_record.append(fov)
-            #if len(self.fov_record) == 5:
-             #   print(self.scan_header)
-              #  fov_msg = LaserScan()
-              #  fov_msg.header.frame_id = 'map'
-              #  fov_msg.header.stamp = rospy.get_rostime()
-              #  fov_msg.angle_min = self.scan_header.angle_min
-              #  fov_msg.angle_max = self.scan_header.angle_max
-              #  fov_msg.angle_increment = self.scan_header.angle_increment
-              #  fov_msg.time_increment = self.scan_header.time_increment
-              #  fov_msg.scan_time = self.scan_header.scan_time
-              #  fov_msg.range_min = self.scan_header.range_min
-              #  fov_msg.range_max = self.scan_header.range_max
-              #  ranges = np.array(self.fov_record).reshape(-1)
-              #  fov_msg.ranges = array.array('f', ranges)
-              #  self.fov_pub.publish(fov_msg)
-              #  self.fov_record = []
+            u = self.solver.solve_drc(self.pose, self.target_pose, self.target_velocity,self.ref_vel, *samples, fov, map_info, 
+                self.use_sampled_cbf_visibility, *visibility_samples)
 
+            ################################## save data to calculate metrics ##################################
+            self.sdf_record.append(self.solver.h)
+            self.raytraced_fov_record.append(self.solver.`raytraced_fov)
+            self.pose_record.append(pose)
+            self.target_pose_record.append(target_pose)
+            self.target_velocity_record.append(target_velocity)
+            self.ref_control_record.append(ref_vel)
+            self.lidar_min_dist_record.append(self.solver.lidar_min_dist)
+
+            # prepare to pickle
+            data_pkl = {
+                "timestamp": self.data_record_ts,
+                "sdf_record": self.sdf_record,
+                "fov_record": self.fov_record,
+                "robot_pose_record": self.pose_record,
+                "target_pose_record": self.target_pose_record, 
+                "target_velocity_record": self.target_velocity_record,
+                "reference_control_record": self.ref_control_record,
+                "lidar_min_dist_record": self.lidar_min_dist_record, # subtracts robot radius
+                "rt_radius": self.solver.raytracing_radius,
+                "raytracing_res": self.solver.raytracing_res,
+                "rt_fov_range_angle": self.solver.raytracing_fov_range_angle
+            }
+            dt_object = datetime.fromtimestamp(self.data_record_ts)
+            readable_time = dt_object.strftime('%Y-%m-%d %H:%M:%S')
+
+            with open(f"~/visibility_control/experiments/data/output_data_{readable_time}.pkl", 'wb') as file:
+                pickle.dump(data_pkl, file)
+
+            # true fov from lidar to visualize in rviz
+            self.fov_record.append(fov)
+            if len(self.fov_record) == 5:
+               print(self.scan_header)
+               fov_msg = LaserScan()
+               fov_msg.header.seq = len(self.fov_record)
+               fov_msg.header.frame_id = 'map'
+               fov_msg.header.stamp = rospy.get_rostime()
+               fov_msg.angle_min = self.scan_header.angle_min
+               fov_msg.angle_max = self.scan_header.angle_max
+               fov_msg.angle_increment = self.scan_header.angle_increment
+               fov_msg.time_increment = self.scan_header.time_increment
+               fov_msg.scan_time = self.scan_header.scan_time
+               fov_msg.range_min = self.scan_header.range_min
+               fov_msg.range_max = self.scan_header.range_max
+               ranges = np.array(self.fov_record).reshape(-1)
+               fov_msg.ranges = array.array('f', ranges)
+               self.fov_pub.publish(fov_msg)
+               self.fov_record = []
+
+            # publish the control
             if u is not None:
                 vel_msg = Twist()
                 vel_msg.linear.x = u[0]
