@@ -1,7 +1,7 @@
 import numpy as np 
 import pickle
 
-with open(f~/visibility_control/experiments/data/output_data_{readable_time}.pkl, 'wb') as file:
+with open(f"~/visibility_control/experiments/data/output_data_{readable_time}.pkl", 'wb') as file:
     data = pickle.load(file)
 
 timestamp = data["timestamp"]
