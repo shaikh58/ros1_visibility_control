@@ -24,7 +24,7 @@ class DRCController:
         self.lidar_min_dist = None
         self.raytraced_fov = None
         self.raytraced_fov_ts = None
-        self.raytracing_radius = 60
+        self.raytracing_radius = radius
         self.raytracing_res = 50
         self.raytracing_fov_range_angle = np.pi/3 # angle to sweep through for fov
 
@@ -319,18 +319,15 @@ class DRCController:
 
         # solving problem
         # prob.solve(solver='SCS', verbose=False, max_iters=140000, eps = 1e-4)
-        prob.solve(solver='SCS', verbose=False)
+        prob.solve(verbose=False)
         solver_time = time.time() - start_time
 
         # Check if the problem was solved successfully
-        if prob.status != 'optimal':
-            solve_fail = True
-            print("-------------------------- SOLVER NOT OPTIMAL -------------------------")
+        if uu.value is None or prob.status != 'optimal':
+            print('-------------------------- SOLVER NOT OPTIMAL -------------------------')
             print("[In solver] solver status: ", prob.status)
+            return ref, self.raytraced_fov, self.h
 
-            return np.array([0.0, 0.0])
-        else:
-            solve_fail = False
 
         # apply bound constraint on optimal control as a post-processing step
         u_clipped = self.clip_opt_u(copy(uu.value[0:2]))
@@ -340,4 +337,4 @@ class DRCController:
         for constraint in constraints:
             print("Constraint satisfied: ", constraint.value(), ", ", "Constraint dual value: ", constraint.dual_value)
 
-        return u_clipped
+        return u_clipped, self.raytraced_fov, self.h

@@ -28,7 +28,7 @@ QP:
   use_penalty_smoothing : True
   pen_smooth_v : 1
   pen_smooth_w : 0.1
-  alpha_fov : 3
+  alpha_fov : 0.1
   alpha_obs : 2
   # possible values are "direction" (only obstacles in front of the agent are included), "distance" (360 degree obstacle inclusion),
   # or "all" (all conditions)
@@ -67,8 +67,8 @@ use_exp_loss: False
 make_rounded: False
 
 # bounds on angular velocity in rad/s
-omega_lb: -0.4 # 0.4rad/s is ~23 deg/s
-omega_ub: 0.4
+omega_lb: -1.75 # 0.4rad/s is ~23 deg/s
+omega_ub: 1.75
 v_lb: 0
 v_ub: 0.5
 
@@ -76,7 +76,7 @@ use_fov_circular: False
 use_control_scaling: False
 w_scale_factor: 1
 FoV:
-  radius: 100
+  radius: 40
   psi: 1.0472
   kappa: 0.4
 

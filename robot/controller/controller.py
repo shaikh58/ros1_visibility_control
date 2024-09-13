@@ -5,15 +5,15 @@ import rospy
 import array
 import tf
 import pickle
-from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped, Point
+from visualization_msgs.msg import Marker
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import LaserScan
 from tf.transformations import euler_from_quaternion
-from robot.controller.basic import BasicController
 from robot.controller.mpc.drc_controller import DRCController
 from robot.estimator.observer import AugmentedEKF
 from env.config import *
-
+from robot.controller.basic_cvx import BasicController
 
 class MyControllerNode:
     def __init__(self):
@@ -28,6 +28,7 @@ class MyControllerNode:
         self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.predicted_tgt_pub = rospy.Publisher('/pred_tgt_pose', PoseStamped, queue_size=10)
         self.fov_pub = rospy.Publisher('/fov', LaserScan, queue_size=10)
+        self.fov_viz_pub = rospy.Publisher('/fov_viz', Marker, queue_size=10)
 
         # TF Listener
         self.tf_listener = tf.TransformListener()
@@ -61,7 +62,7 @@ class MyControllerNode:
         self.data_output_time_str = None
         self.data_pkl = None
         self.data_record_ts = None
-        self.solver = DRCController()
+        self.solver = BasicController() # DRCController()
         self.initial_target_cov = np.diag([0, 0, 0, 0, 0])
         self.process_noise = np.diag([0, 0, 0, 1, 1])
         self.observation_noise = np.diag([0.05, 0.05, 0.05, 0.1, 0.1])
@@ -107,12 +108,12 @@ class MyControllerNode:
                 return
 
             # for debugging: check messages to see if any are None
-#            rospy.loginfo("scan" + str(type(scan)))
-#            rospy.loginfo("Target pose: " + str(type(target_pose)))
-#            rospy.loginfo(str(type(target_velocity)))
-#            rospy.loginfo("Agent pose: " + str(type(pose)))
-#            rospy.loginfo("Reference input: " + str(type(ref_vel)))
-#            rospy.loginfo("Map: " + str(type(map_info["map"])))
+            # rospy.loginfo("scan" + str(type(scan)))
+            # rospy.loginfo("Target pose: " + str(type(target_pose)))
+            # rospy.loginfo(str(type(target_velocity)))
+            # rospy.loginfo("Agent pose: " + str(type(pose)))
+            # rospy.loginfo("Reference input: " + str(type(ref_vel)))
+            # rospy.loginfo("Map: " + str(type(map_info["map"])))
             self.control_loop(pose, target_pose, target_velocity, ref_vel, scan, map_info)
             end = rospy.get_rostime()
             rospy.loginfo(f'Controller processing time: {(end - start).to_sec() * 1000} ms')
@@ -191,33 +192,73 @@ class MyControllerNode:
         fov = np.append(fov, fov[0][None, :], axis=0)
         return fov
 
+    def publish_viz(self, scan):
+        marker = Marker()
+        marker.header.frame_id = "map"  # Adjust based on your coordinate frame
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "shape"
+        marker.id = 0
+        marker.type = Marker.LINE_STRIP  # Or use LINE_LIST for disconnected lines
+        marker.action = Marker.ADD
+
+        # Set the scale of the line (width in meters)
+        marker.scale.x = 0.05
+
+        # Set the color of the line (RGBA format)
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0  # Fully opaque
+
+        # Add the points to the marker
+        for pos in scan:
+            point = Point()
+            point.x = pos[0]
+            point.y = pos[1]
+            point.z = 0.0  # Z-axis set to 0 for a 2D shape
+            marker.points.append(point)
+
+        # Optionally, close the shape by connecting the last point to the first
+        # If you want the shape to be closed like a polygon:
+        point = Point()
+        point.x = scan[0][0]
+        point.y = scan[0][1]
+        point.z = 0.0
+        marker.points.append(point)
+
+        # Publish the marker
+        self.fov_viz_pub.publish(marker)
+
+
     def control_loop(self, pose, target_pose, target_velocity, ref_vel, scan, map_info=None):
-        """Main control loop that solves the CBF controller"""
-
-        if scan is not None and target_pose is not None and target_velocity is not None \
-        and pose is not None and ref_vel is not None:
-
+        if (scan is not None and target_pose is not None and target_velocity is not None and
+                pose is not None and ref_vel is not None):
             self.data_record_ts = time.time()
+            print("Target pose: ", target_pose, "Target velocity: ", target_velocity, "Agent pose: ", pose,
+                  "Planner reference control: ", ref_vel)
 
-            print("Target pose: ", target_pose, "Target velocity: ", target_velocity, "Agent pose: ", pose, 
-                "Planner reference control: ",ref_vel)
+            if isinstance(self.solver, DRCController):
+                scan[scan == np.inf] = radius
+                fov = self.get_fov_from_lidar(scan, pose, stride=2)
+                samples = self.solver.get_drc_samples(self.scan, n_samples=1)
+                if self.use_sampled_cbf_visibility:
+                    visibility_samples = self.solver.get_visibility_cbf_samples(fov, pose, target_pose, target_velocity, map_info)
+                else:
+                    visibility_samples = (None, None, None)
 
-            scan[scan == np.inf] = radius
-            fov = self.get_fov_from_lidar(scan, pose, stride=2)
+                u, raytraced_fov, target_sdf = self.solver.solve_drc(self.pose, self.target_pose, self.target_velocity, self.ref_vel, *samples,
+                                          fov, map_info, self.use_sampled_cbf_visibility, *visibility_samples)
 
-            samples = self.solver.get_drc_samples(self.scan, n_samples=1)
+            elif isinstance(self.solver, BasicController):
+                u, raytraced_fov, target_sdf = self.solver.solvecvx(pose, target_pose, target_velocity, np.array([0.2, 0]), scan, map_info)
 
-            if self.use_sampled_cbf_visibility:
-                visibility_samples = self.solver.get_visibility_cbf_samples(fov, pose, target_pose, target_velocity, map_info)
             else:
-                visibility_samples = (None, None, None)
-
-            u = self.solver.solve_drc(self.pose, self.target_pose, self.target_velocity,self.ref_vel, *samples, fov, map_info, 
-                self.use_sampled_cbf_visibility, *visibility_samples)
+                print("Invalid controller requested. Optimal control not found.")
+                return
 
             ################################## save data to calculate metrics ##################################
-            self.sdf_record.append(self.solver.h)
-            self.raytraced_fov_record.append(self.solver.raytraced_fov)
+            self.sdf_record.append(target_sdf)
+            self.raytraced_fov_record.append(raytraced_fov)
             self.pose_record.append(pose)
             self.target_pose_record.append(target_pose)
             self.target_velocity_record.append(target_velocity)
@@ -243,39 +284,22 @@ class MyControllerNode:
             self.data_pkl = data_pkl
             self.data_output_time_str = readable_time
 
-            # true fov from lidar to visualize in rviz
-#            self.fov_record.append(fov)
-#            if len(self.fov_record) == 5:
-#               print(self.scan_header)
-#               fov_msg = LaserScan()
-#               fov_msg.header.seq = len(self.fov_record)
-#               fov_msg.header.frame_id = 'map'
-#               fov_msg.header.stamp = rospy.get_rostime()
-#               fov_msg.angle_min = self.scan_header.angle_min
-#               fov_msg.angle_max = self.scan_header.angle_max
-#               fov_msg.angle_increment = self.scan_header.angle_increment
-#               fov_msg.time_increment = self.scan_header.time_increment
-#               fov_msg.scan_time = self.scan_header.scan_time
-#               fov_msg.range_min = self.scan_header.range_min
-#               fov_msg.range_max = self.scan_header.range_max
-#               ranges = np.array(self.fov_record).reshape(-1)
-#               fov_msg.ranges = array.array('f', ranges)
-#               self.fov_pub.publish(fov_msg)
-#               self.fov_record = []
-
             # publish the control
             if u is not None:
+                # print(u)
                 vel_msg = Twist()
-                vel_msg.linear.x = u[0]
-                vel_msg.angular.z = u[1]
+                vel_msg.linear.x = float(u[0])
+                vel_msg.angular.z = float(u[1])
                 self.cmd_vel_pub.publish(vel_msg)
+            self.publish_viz(raytraced_fov)
         self.solver_ongoing = False
+
+
 
 if __name__ == '__main__':
     try:
         node = MyControllerNode()
         rospy.spin()
-        with open(f"/home/administrator/visibility_control/experiments/data/output_data_{node.data_output_time_str}.pkl", 'wb') as file:
-            pickle.dump(node.data_pkl, file)
     except rospy.ROSInterruptException:
         pass
+
