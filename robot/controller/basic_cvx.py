@@ -1,5 +1,6 @@
 import numpy as np
-from env.config import epsilon_s, alpha_fov, radius, v_lb, v_ub, omega_lb, omega_ub
+from env.config import (epsilon_s, alpha_fov, radius, v_lb, v_ub, omega_lb, omega_ub, use_penalty_smoothing, omega_penalty_l2,
+                        pen_smooth_v, pen_smooth_w, alpha_obs, use_ema_omega, ema_frac)
 import cvxpy as cp
 from utils import SDF_RT, polygon_SDF
 
@@ -7,7 +8,7 @@ from utils import SDF_RT, polygon_SDF
 class BasicController:
     def __init__(self, mapinfo=None):
         self.map_info = mapinfo
-        self.raytracing_radius = 60
+        self.raytracing_radius = radius
         self.raytracing_res = 50
         self.raytracing_fov_range_angle = np.pi / 6  # angle to sweep through for fov
 
@@ -20,14 +21,16 @@ class BasicController:
         return np.array([[np.cos(theta), -np.sin(theta)],
                          [np.sin(theta), np.cos(theta)]])
 
-    def solvecvx(self, rbt, tgt, ydot, ref, scan, mapinfo):
+    def solvecvx(self, rbt, tgt, ydot, ref, scan, mapinfo, u_prev):
         """CVXPY solver"""
         self.map_info = mapinfo
         '''Visibility CBF constraint'''
         rdrx, rdry, sdf = self.visibility_gradient(rbt, tgt)
         P_visibility = np.array([[1, 0], [0, 1]])  # Quadratic term (must be positive semi-definite)
+        P_smoothing = np.diag([pen_smooth_v, pen_smooth_w])
         u = cp.Variable((2, 1))
         ref = ref.reshape((2, 1))
+        u_prev = u_prev.reshape((2, 1))
         rbt = rbt.reshape((3, 1))
         grad = rdrx.reshape((1, 3))
         grady = rdry.reshape((1, 3))
@@ -36,7 +39,7 @@ class BasicController:
         LGh = -grad @ self.G(rbt.flatten())
         dhdt = -grady @ ydot
         h = -sdf
-        print("Target SDF: ", h)
+        print("Target SDF: ", sdf)
         safe_observation_margin = epsilon_s
         visibility_const = LGh @ u + dhdt + alf * (h - safe_observation_margin) >= 0
 
@@ -51,13 +54,19 @@ class BasicController:
             print('dir vec of sample cbf: ', obs_vec)
             obs_grad = (obs_vec / np.linalg.norm(obs_vec)).T
             print('gradient of sample cbf: ', obs_grad)
-            obs_const = obs_grad.T @ self.R(rbt[2, 0]) @ np.array([[1, 0], [0, l]]) @ u + 1 * (obs_dist - r) >= 0
+            obs_const = obs_grad.T @ self.R(rbt[2, 0]) @ np.array([[1, 0], [0, l]]) @ u + alpha_obs * (obs_dist - r) >= 0
 
         '''Motion constraints'''
         vel_const_min_w = omega_lb <= u[1]
         vel_const_max_w = u[1] <= omega_ub
 
         objective = cp.Minimize(cp.quad_form((u - ref), P_visibility))
+        if use_penalty_smoothing:
+            objective = cp.Minimize(cp.quad_form((u - ref), P_visibility) + cp.quad_form((u-u_prev), P_smoothing))
+        if omega_penalty_l2 > 0:
+            print("Using L2 penalty on angular velocity")
+            objective = cp.Minimize(cp.quad_form((u - ref), P_visibility) + omega_penalty_l2 * u[1]**2)
+
         constraints = [visibility_const, obs_const]
         prob = cp.Problem(objective, constraints)
         prob.solve()
@@ -66,12 +75,15 @@ class BasicController:
         if u.value is None or prob.status != 'optimal':
             print('-------------------------- SOLVER NOT OPTIMAL -------------------------')
             print("[In solver] solver status: ", prob.status)
-            return ref, self.get_fov(rbt), h
+            return ref, self.get_fov(rbt), sdf, obs_dist
 
-        u_clipped = self.crop(u.value)
+        if use_ema_omega:
+            u_final = u_prev + ema_frac * (u.value)
+            print("EMA smoothed, original control: ", u.value-u_prev)
+        else:
+            u_final = u.value
 
-        print("Final original control: ", u.value[0:2], "Clipped control: ", u_clipped)
-        return u_clipped, self.get_fov(rbt), h
+        return self.crop(u_final), self.get_fov(rbt), sdf, obs_dist
 
     def sample_cbf(self, scan_w, rbt):
         if len(scan_w) == 0: return None

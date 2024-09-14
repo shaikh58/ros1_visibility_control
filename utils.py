@@ -208,10 +208,7 @@ def polygon_SDF(polygon, point):
         wn += 1 if cond1 and cond2 and val3 > 0 else 0
         wn -= 1 if ~cond1 and ~cond2 and val3 < 0 else 0
     sign = 1 if wn == 0 else -1
-    if make_rounded:
-        return -(np.sqrt(d) * sign) - 1
-    else:
-        return -(np.sqrt(d) * sign)
+    return (np.sqrt(d) * sign)
 
 @lru_cache(None)
 def DDA(x0, y0, x1, y1):

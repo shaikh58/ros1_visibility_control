@@ -25,10 +25,14 @@ angle_inc : 0.005806980188935995
 # if True, solve using QP solver. If False, use MPC
 QP:
   use_qp : True
-  use_penalty_smoothing : True
-  pen_smooth_v : 1
+  # smoothing methods and parameters; can only have one of use_ema_omega, use_penalty_smoothing, and omega_penalty_l2 being True
+  use_ema_omega: False
+  ema_frac: 1 # between [0,1], higher means less smoothing
+  omega_penalty_l2: 0
+  use_penalty_smoothing : False
+  pen_smooth_v : 0.1
   pen_smooth_w : 0.1
-  alpha_fov : 0.1
+  alpha_fov : 2
   alpha_obs : 2
   # possible values are "direction" (only obstacles in front of the agent are included), "distance" (360 degree obstacle inclusion),
   # or "all" (all conditions)
@@ -67,8 +71,8 @@ use_exp_loss: False
 make_rounded: False
 
 # bounds on angular velocity in rad/s
-omega_lb: -1.75 # 0.4rad/s is ~23 deg/s
-omega_ub: 1.75
+omega_lb: -0.5 # 0.4rad/s is ~23 deg/s
+omega_ub: 0.5
 v_lb: 0
 v_ub: 0.5
 

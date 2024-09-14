@@ -29,6 +29,8 @@ class MyControllerNode:
         self.predicted_tgt_pub = rospy.Publisher('/pred_tgt_pose', PoseStamped, queue_size=10)
         self.fov_pub = rospy.Publisher('/fov', LaserScan, queue_size=10)
         self.fov_viz_pub = rospy.Publisher('/fov_viz', Marker, queue_size=10)
+        self.path_pub = rospy.Publisher('/robot_pose_viz', Marker, queue_size=10)
+        self.target_path_pub = rospy.Publisher('/target_pose_viz', Marker, queue_size=10)
 
         # TF Listener
         self.tf_listener = tf.TransformListener()
@@ -51,6 +53,7 @@ class MyControllerNode:
         self.use_sampled_cbf_visibility = False
         self.use_raytracing = True
         self.fov_calc_ongoing = False
+        self.prev_u = None
         self.fov_record = []
         self.raytraced_fov_record = []
         self.sdf_record = []
@@ -59,9 +62,10 @@ class MyControllerNode:
         self.target_velocity_record = []
         self.target_pose_record = []
         self.lidar_min_dist_record = []
+        self.data_record_ts = []
+        self.optimal_control_record = []
         self.data_output_time_str = None
         self.data_pkl = None
-        self.data_record_ts = None
         self.solver = BasicController() # DRCController()
         self.initial_target_cov = np.diag([0, 0, 0, 0, 0])
         self.process_noise = np.diag([0, 0, 0, 1, 1])
@@ -93,7 +97,7 @@ class MyControllerNode:
     def scan_callback(self, msg):
         self.scan = np.array(msg.ranges)
         self.scan_header = msg.header
-        if not self.solver_ongoing:
+        if True:
             start = rospy.get_rostime()
             self.solver_ongoing = True
             pose = self.pose
@@ -229,13 +233,75 @@ class MyControllerNode:
         # Publish the marker
         self.fov_viz_pub.publish(marker)
 
+    def publish_traj_viz(self, poses):
+        marker = Marker()
+        marker.header.frame_id = "map"  # Adjust based on your coordinate frame
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "shape"
+        marker.id = 0
+        marker.type = Marker.LINE_STRIP  # Or use LINE_LIST for disconnected lines
+        marker.action = Marker.ADD
+
+        # Set the scale of the line (width in meters)
+        marker.scale.x = 0.05
+
+        # Set the color of the line (RGBA format)
+        marker.color.r = 0.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0  # Fully opaque
+
+        # Add the points to the marker
+        for pose in poses:
+            point = Point()
+            point.x = pose[0]
+            point.y = pose[1]
+            point.z = 0.0  # Z-axis set to 0 for a 2D shape
+            marker.points.append(point)
+
+        # Publish the marker
+        self.path_pub.publish(marker)
+
+    def publish_target_traj_viz(self, poses):
+        marker = Marker()
+        marker.header.frame_id = "map"  # Adjust based on your coordinate frame
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "shape"
+        marker.id = 0
+        marker.type = Marker.LINE_STRIP  # Or use LINE_LIST for disconnected lines
+        marker.action = Marker.ADD
+
+        # Set the scale of the line (width in meters)
+        marker.scale.x = 0.05
+
+        # Set the color of the line (RGBA format)
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0  # Fully opaque
+
+        # Add the points to the marker
+        for pose in poses:
+            point = Point()
+            point.x = pose[0]
+            point.y = pose[1]
+            point.z = 0.0  # Z-axis set to 0 for a 2D shape
+            marker.points.append(point)
+
+        # Publish the marker
+        self.target_path_pub.publish(marker)
+
 
     def control_loop(self, pose, target_pose, target_velocity, ref_vel, scan, map_info=None):
         if (scan is not None and target_pose is not None and target_velocity is not None and
                 pose is not None and ref_vel is not None):
-            self.data_record_ts = time.time()
+
+            self.data_record_ts.append(time.time())
+
             print("Target pose: ", target_pose, "Target velocity: ", target_velocity, "Agent pose: ", pose,
                   "Planner reference control: ", ref_vel)
+
+            if self.prev_u is None: self.prev_u = ref_vel
 
             if isinstance(self.solver, DRCController):
                 scan[scan == np.inf] = radius
@@ -250,12 +316,15 @@ class MyControllerNode:
                                           fov, map_info, self.use_sampled_cbf_visibility, *visibility_samples)
 
             elif isinstance(self.solver, BasicController):
-                u, raytraced_fov, target_sdf = self.solver.solvecvx(pose, target_pose, target_velocity, np.array([0.2, 0]), scan, map_info)
+                u, raytraced_fov, target_sdf, lidar_min_dist = self.solver.solvecvx(pose, target_pose, target_velocity,
+                                                                                    np.array([0.2, 0]), scan, map_info, self.prev_u)
 
             else:
                 print("Invalid controller requested. Optimal control not found.")
                 return
 
+            print("Final control: ", u.reshape(2, ), "Previous control: ", self.prev_u)
+            self.prev_u = u
             ################################## save data to calculate metrics ##################################
             self.sdf_record.append(target_sdf)
             self.raytraced_fov_record.append(raytraced_fov)
@@ -263,12 +332,14 @@ class MyControllerNode:
             self.target_pose_record.append(target_pose)
             self.target_velocity_record.append(target_velocity)
             self.ref_control_record.append(ref_vel)
-            self.lidar_min_dist_record.append(self.solver.lidar_min_dist)
+            self.lidar_min_dist_record.append(lidar_min_dist)
+            self.optimal_control_record.append(u)
 
             # prepare to pickle
             data_pkl = {
-                "timestamp": self.data_record_ts,
+                "timestamp_record": self.data_record_ts,
                 "sdf_record": self.sdf_record,
+                "optimal_control_record": self.optimal_control_record,
                 "raytraced_fov_record": self.raytraced_fov_record,
                 "robot_pose_record": self.pose_record,
                 "target_pose_record": self.target_pose_record, 
@@ -279,7 +350,7 @@ class MyControllerNode:
                 "raytracing_res": self.solver.raytracing_res,
                 "rt_fov_range_angle": self.solver.raytracing_fov_range_angle
             }
-            dt_object = datetime.fromtimestamp(self.data_record_ts)
+            dt_object = datetime.fromtimestamp(self.data_record_ts[0])
             readable_time = dt_object.strftime('%Y-%m-%d_%H:%M:%S')
             self.data_pkl = data_pkl
             self.data_output_time_str = readable_time
@@ -288,10 +359,14 @@ class MyControllerNode:
             if u is not None:
                 # print(u)
                 vel_msg = Twist()
-                vel_msg.linear.x = float(u[0])
-                vel_msg.angular.z = float(u[1])
+                vel_msg.linear.x = u[0]
+                vel_msg.angular.z = u[1]
                 self.cmd_vel_pub.publish(vel_msg)
+
             self.publish_viz(raytraced_fov)
+            self.publish_traj_viz(self.pose_record)
+            self.publish_target_traj_viz(self.target_pose_record)
+
         self.solver_ongoing = False
 
 
@@ -300,6 +375,10 @@ if __name__ == '__main__':
     try:
         node = MyControllerNode()
         rospy.spin()
+        with open(f"/home/administrator/visibility_control/experiments/data/output_data_{node.data_output_time_str}.pkl",
+                'wb') as file:
+            pickle.dump(node.data_pkl, file)
+
     except rospy.ROSInterruptException:
         pass
 
